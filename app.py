@@ -1,6 +1,6 @@
 import streamlit as st
-from google import genai
-from google.genai import types
+import anthropic
+import base64
 import json, csv, io, re
 from datetime import datetime
 
@@ -151,28 +151,43 @@ def get_client():
     api_key = st.session_state.get("api_key", "")
     if not api_key:
         return None
-    return genai.Client(api_key=api_key)
+    return anthropic.Anthropic(api_key=api_key)
 
 def extract_transactions(pdf_bytes, bank):
     client = get_client()
     if not client:
         raise ValueError("No API key configured")
     prompt = PROMPTS[bank]
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=[
-            types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
-            prompt
-        ]
+    pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("utf-8")
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=4096,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": pdf_b64
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": prompt
+                }
+            ]
+        }]
     )
-    raw = response.text.strip()
+    raw = response.content[0].text.strip()
     raw = re.sub(r'^```json\s*', '', raw, flags=re.IGNORECASE)
     raw = re.sub(r'^```\s*', '', raw, flags=re.IGNORECASE)
     raw = re.sub(r'```\s*$', '', raw)
     start = raw.find('[')
     end = raw.rfind(']')
     if start == -1 or end == -1:
-        raise ValueError("No JSON array found in Gemini response")
+        raise ValueError("No JSON array found in Claude response")
     return json.loads(raw[start:end+1])
 
 def build_rows(raw, bank):
@@ -230,13 +245,13 @@ with st.sidebar:
     st.markdown("### ⬡ SA Bank → CSV")
     st.markdown("---")
 
-    st.markdown("**🔑 Gemini API Key**")
+    st.markdown("**🔑 Anthropic API Key**")
     api_key = st.text_input(
         "API Key", type="password",
-        placeholder="Paste your Gemini API key",
+        placeholder="Paste your Anthropic API key",
         label_visibility="collapsed", key="api_key"
     )
-    st.caption("Free key from [aistudio.google.com](https://aistudio.google.com)")
+    st.caption("Get a key from [console.anthropic.com](https://console.anthropic.com)")
     st.markdown("---")
 
     st.markdown("**🏦 Select Bank**")
@@ -263,7 +278,7 @@ with st.sidebar:
 st.markdown(f"""
 <div class="main-header">
     <div class="header-title">⬡ SA Bank Statement → CSV</div>
-    <div class="header-sub">Multi-Bank Extractor · Capitec · Investec · FNB · ABSA · Nedbank · Standard Bank · Powered by Gemini AI</div>
+    <div class="header-sub">Multi-Bank Extractor · Capitec · Investec · FNB · ABSA · Nedbank · Standard Bank · Powered by Claude AI</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -301,7 +316,7 @@ if uploaded_files:
         if not api_key:
             st.warning("⚠️ Please enter your Gemini API key in the sidebar first.")
         else:
-            btn_label = f"▶ Extract {len(new_files)} {selected_bank} file{'s' if len(new_files) > 1 else ''} with Gemini AI"
+            btn_label = f"▶ Extract {len(new_files)} {selected_bank} file{'s' if len(new_files) > 1 else ''} with Claude AI"
             if st.button(btn_label, use_container_width=True):
                 progress = st.progress(0)
                 status = st.empty()
