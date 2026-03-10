@@ -124,14 +124,37 @@ Return ONLY the JSON array, nothing else.""",
 "Standard Bank": """You are a bank statement parser. Extract ALL transactions from this Standard Bank bank statement.
 
 Return ONLY a valid JSON array. No markdown, no code fences, no explanation.
-Skip: BALANCE BROUGHT FORWARD, VAT Summary rows, Account Summary rows, any totals rows.
+
+SKIP these rows entirely:
+- BALANCE BROUGHT FORWARD
+- VAT Summary section (Total charge amount, Total VAT, etc.)
+- Account Summary section (Balance at date of statement, etc.)
+- Any row with no date and no amount
+
+DATE FORMAT INSTRUCTIONS:
+- The date column shows "MM DD" e.g. "02 15" means February 15, "03 01" means March 1
+- Find the statement period from the line "Statement from DD Month YYYY to DD Month YYYY"
+- Use the year from that line (e.g. 2024)
+- Some dates may cross into the next month or year — use the correct year for each date
+- Output all dates as DD/MM/YYYY e.g. "15/02/2024"
+
+DETAILS INSTRUCTIONS:
+- Each transaction has a main Details line and sometimes a second reference line below it
+- Combine both lines into one string separated by " - "
+- Strip all leading/trailing spaces
+
+AMOUNT INSTRUCTIONS:
+- Debits column: values like "28,500.00-" or "600.00-" — strip the "-" suffix, make the number NEGATIVE
+- Credits column: values like "1,500.00" or "8,000.00" — make the number POSITIVE
+- Service Fee column marked "##": these are already reflected in the Debits column — do NOT create extra rows for them, just include the debit row normally
+- Remove all commas from numbers before converting
 
 Each object must have exactly these keys:
-- date (string DD/MM/YYYY — input format is "MM DD" like "05 13" meaning May 13. Reconstruct the full year from the statement period header. Output as DD/MM/YYYY.)
-- details (string — combine Details line 1 and line 2 if present, separated by " - ". Strip leading/trailing spaces.)
-- amount (number — if Debits column has value ending in "-" (e.g. "5,000.00-") it is negative (money out), strip the "-" suffix. If Credits column has value it is positive. Remove commas from numbers.)
+- date (string DD/MM/YYYY)
+- details (string)
+- amount (number, negative=money out, positive=money in)
 
-Return ONLY the JSON array, nothing else.""",
+Return ONLY the JSON array, nothing else. No explanation, no markdown, no code fences.""",
 }
 
 BANK_COLORS = {
@@ -148,7 +171,10 @@ BANK_LIST = ["Capitec", "Investec", "FNB", "ABSA", "Nedbank", "Standard Bank"]
 # ─── FUNCTIONS ────────────────────────────────────────────────────────────────
 
 def get_client():
-    api_key = st.session_state.get("api_key", "")
+    try:
+        api_key = st.secrets["ANTHROPIC_API_KEY"]
+    except Exception:
+        api_key = st.session_state.get("api_key", "")
     if not api_key:
         return None
     return anthropic.Anthropic(api_key=api_key)
@@ -245,14 +271,7 @@ with st.sidebar:
     st.markdown("### ⬡ SA Bank → CSV")
     st.markdown("---")
 
-    st.markdown("**🔑 Anthropic API Key**")
-    api_key = st.text_input(
-        "API Key", type="password",
-        placeholder="Paste your Anthropic API key",
-        label_visibility="collapsed", key="api_key"
-    )
-    st.caption("Get a key from [console.anthropic.com](https://console.anthropic.com)")
-    st.markdown("---")
+
 
     st.markdown("**🏦 Select Bank**")
     selected_bank = st.selectbox(
@@ -313,10 +332,7 @@ if uploaded_files:
     new_files = [f for f in uploaded_files if f.name not in already_processed]
 
     if new_files:
-        if not api_key:
-            st.warning("⚠️ Please enter your Gemini API key in the sidebar first.")
-        else:
-            btn_label = f"▶ Extract {len(new_files)} {selected_bank} file{'s' if len(new_files) > 1 else ''} with Claude AI"
+        btn_label = f"▶ Extract {len(new_files)} {selected_bank} file{'s' if len(new_files) > 1 else ''} with Claude AI"
             if st.button(btn_label, use_container_width=True):
                 progress = st.progress(0)
                 status = st.empty()
