@@ -1,5 +1,6 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import json, csv, io, re
 from datetime import datetime
 
@@ -146,22 +147,24 @@ BANK_LIST = ["Capitec", "Investec", "FNB", "ABSA", "Nedbank", "Standard Bank"]
 
 # ─── FUNCTIONS ────────────────────────────────────────────────────────────────
 
-def get_model():
+def get_client():
     api_key = st.session_state.get("api_key", "")
     if not api_key:
         return None
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-2.0-flash")
+    return genai.Client(api_key=api_key)
 
 def extract_transactions(pdf_bytes, bank):
-    model = get_model()
-    if not model:
+    client = get_client()
+    if not client:
         raise ValueError("No API key configured")
     prompt = PROMPTS[bank]
-    response = model.generate_content([
-        {"mime_type": "application/pdf", "data": pdf_bytes},
-        prompt
-    ])
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=[
+            types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
+            prompt
+        ]
+    )
     raw = response.text.strip()
     raw = re.sub(r'^```json\s*', '', raw, flags=re.IGNORECASE)
     raw = re.sub(r'^```\s*', '', raw, flags=re.IGNORECASE)
