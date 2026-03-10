@@ -53,21 +53,31 @@ div[data-testid="stSidebar"] { background-color: #080808; border-right: 1px soli
 
 PROMPTS = {
 
-"Capitec": """You are a bank statement parser. Extract ALL transactions from this Capitec bank statement.
+"Capitec": """You are a bank statement parser. Your ONLY output must be a valid JSON array. No explanation, no markdown, no code fences, no preamble, no postamble — just the raw JSON array starting with [ and ending with ].
 
-Return ONLY a valid JSON array. No markdown, no code fences, no explanation.
-Skip: Balance brought forward, Interest Rate, Fee Total, VAT Total lines.
+TASK: Extract every transaction from this Capitec Business Account statement.
+
+COLUMNS IN THE STATEMENT:
+Post Date | Trans. Date | Description | Reference | Fees | Amount | Balance
 
 Each object must have exactly these keys:
-- date (string DD/MM/YYYY — use post date, convert 2-digit year to 4-digit e.g. 01/05/2025)
-- details (string — combine Description and Reference as "Description - Reference", or just Description if no reference)
-- amount (number — positive=money in, negative=money out; if amount is 0 but fees column has value, use the fee value as negative)
-- fee (number — fee value as negative number, or 0 if no fee)
-- is_fee_only (boolean — true if the original row only had a fee value and no transaction amount)
+- "date": string DD/MM/YYYY — use Trans. Date (second date column), convert 2-digit year e.g. "01/06/25" → "01/06/2025"
+- "details": string — combine Description and Reference as "Description - Reference", or just Description if no Reference
+- "amount": number — the Amount column value as a signed number (negative = money out, positive = money in). Remove commas.
+- "fee": number — the Fees column value as a negative number (e.g. -1.00), or 0 if the Fees column is empty for this row
 
-Rules:
-- For rows where amount=0 but fee exists (e.g. Monthly Service Fee, Notification Fee): set amount=fee as negative, fee=0, is_fee_only=true
-- For normal rows with both amount and fee: keep amount as-is, set fee as negative number
+AMOUNT SIGN: Amount column values already carry their sign (e.g. -521.02 is debit, +1203.69 is credit). Preserve the sign.
+
+SPECIAL CASE — rows where Amount column is empty/zero but Fees column has a value (e.g. Monthly Service Fee, Notification Fee):
+- Set "amount" to the fee value as a NEGATIVE number
+- Set "fee" to 0
+- Example: Monthly Service Fee with fee=-50.00, amount=empty → {"amount": -50.00, "fee": 0}
+
+SKIP:
+- Balance brought forward line
+- Interest Rate @ line
+- Fee Total and VAT Total summary lines
+- Any header or footer lines
 
 Return ONLY the JSON array, nothing else.""",
 
@@ -84,15 +94,29 @@ Each object must have exactly these keys:
 
 Return ONLY the JSON array, nothing else.""",
 
-"FNB": """You are a bank statement parser. Extract ALL transactions from this FNB (First National Bank) bank statement.
+"FNB": """You are a bank statement parser. Your ONLY output must be a valid JSON array. No explanation, no markdown, no code fences, no preamble, no postamble — just the raw JSON array starting with [ and ending with ].
 
-Return ONLY a valid JSON array. No markdown, no code fences, no explanation.
-Skip: Opening Balance, Closing Balance, any totals or summary rows.
+TASK: Extract every transaction from this FNB Gold Business Account statement.
+
+COLUMNS IN THE STATEMENT:
+Date | Description | Amount | Balance | Accrued Bank Charges
 
 Each object must have exactly these keys:
-- date (string DD/MM/YYYY — input format is like "02 Jan", reconstruct the full year from the statement period header at the top of the statement)
-- details (string — combine Description line 1 and Description line 2 if present, separated by " - ". Strip leading/trailing spaces.)
-- amount (number — if Amount column ends with "Cr" it is positive (money in), if no suffix or ends with "Dr" it is negative (money out). Strip the Cr/Dr suffix before converting to number. Remove commas from numbers.)
+- "date": string DD/MM/YYYY — dates appear as "DD Mon" e.g. "01 Mar". Get the year from the statement period header line "Statement Period : DD Month YYYY to DD Month YYYY". Output as DD/MM/YYYY e.g. "01/03/2025".
+- "details": string — use the full Description text. For rows prefixed with "#" (fee rows), strip the "#" e.g. "#Monthly Account Fee" → "Monthly Account Fee"
+- "amount": number — if Amount ends with "Cr" it is POSITIVE (money in). If no suffix it is NEGATIVE (money out). Remove "Cr" suffix and all commas before converting. Example: "17,000.00Cr" → 17000.00, "23,600.00" → -23600.00
+
+IGNORE completely:
+- The Balance column
+- The Accrued Bank Charges column — these are NOT separate transactions, do not output rows for them
+- Opening Balance / Closing Balance lines
+- Turnover for Statement Period section
+- Any row where Amount is exactly 0.00 or missing
+
+FEE ROWS (lines starting with "#" e.g. "#Monthly Account Fee", "#Service Fees"):
+- These are normal debit rows — output ONE row each
+- Amount has no "Cr" suffix so it is NEGATIVE
+- Strip the "#" from details
 
 Return ONLY the JSON array, nothing else.""",
 
@@ -121,40 +145,42 @@ Each object must have exactly these keys:
 
 Return ONLY the JSON array, nothing else.""",
 
-"Standard Bank": """You are a bank statement parser. Extract ALL transactions from this Standard Bank bank statement.
+"Standard Bank": """You are a bank statement parser. Your ONLY output must be a valid JSON array. No explanation, no markdown, no code fences, no preamble, no postamble — just the raw JSON array starting with [ and ending with ].
 
-Return ONLY a valid JSON array. No markdown, no code fences, no explanation.
-
-SKIP these rows entirely:
-- BALANCE BROUGHT FORWARD
-- VAT Summary section (Total charge amount, Total VAT, etc.)
-- Account Summary section (Balance at date of statement, etc.)
-- Any row with no date and no amount
-
-DATE FORMAT INSTRUCTIONS:
-- The date column shows "MM DD" e.g. "02 15" means February 15, "03 01" means March 1
-- Find the statement period from the line "Statement from DD Month YYYY to DD Month YYYY"
-- Use the year from that line (e.g. 2024)
-- Some dates may cross into the next month or year — use the correct year for each date
-- Output all dates as DD/MM/YYYY e.g. "15/02/2024"
-
-DETAILS INSTRUCTIONS:
-- Each transaction has a main Details line and sometimes a second reference line below it
-- Combine both lines into one string separated by " - "
-- Strip all leading/trailing spaces
-
-AMOUNT INSTRUCTIONS:
-- Debits column: values like "28,500.00-" or "600.00-" — strip the "-" suffix, make the number NEGATIVE
-- Credits column: values like "1,500.00" or "8,000.00" — make the number POSITIVE
-- Service Fee column marked "##": these are already reflected in the Debits column — do NOT create extra rows for them, just include the debit row normally
-- Remove all commas from numbers before converting
+TASK: Extract every transaction from this Standard Bank Private Banking Current Account statement.
 
 Each object must have exactly these keys:
-- date (string DD/MM/YYYY)
-- details (string)
-- amount (number, negative=money out, positive=money in)
+- "date": string DD/MM/YYYY
+- "details": string
+- "amount": number (negative = money out, positive = money in)
 
-Return ONLY the JSON array, nothing else. No explanation, no markdown, no code fences.""",
+DATE RULES:
+- Dates appear as "MM DD" e.g. "02 09" means February 9, "03 01" means March 1
+- Find the statement year from the header line "Statement from DD Month YYYY to DD Month YYYY"
+- Output format: DD/MM/YYYY e.g. "09/02/2024"
+- If a transaction date falls before the statement start date, it belongs to the next year
+
+DETAILS RULES:
+- Each transaction has a main description line and sometimes a second reference line below it
+- Combine both lines into one string separated by " - "
+- Strip all leading/trailing whitespace
+
+AMOUNT RULES:
+- Debits: values ending with "-" e.g. "28,500.00-" → -28500.00 (NEGATIVE)
+- Credits: plain values e.g. "1,500.00" → 1500.00 (POSITIVE)
+- Balance column values like "177,552.74-" → IGNORE COMPLETELY (these are balances, not amounts)
+- Fees marked "##" are already included in the Debits column — do NOT create extra rows for them
+- Remove all commas from numbers
+
+SKIP THESE ENTIRELY:
+- BALANCE BROUGHT FORWARD line
+- VAT Summary section (any rows mentioning Total VAT, VAT amount)
+- Account Summary section (Balance at date of statement, etc.)
+- Limit Structure section
+- Any row with no date
+- Any header or footer lines
+
+Return ONLY the JSON array, nothing else.""",
 }
 
 BANK_COLORS = {
@@ -167,6 +193,26 @@ BANK_COLORS = {
 }
 
 BANK_LIST = ["Capitec", "Investec", "FNB", "ABSA", "Nedbank", "Standard Bank"]
+
+# ─── BANK DETECTION ───────────────────────────────────────────────────────────
+
+BANK_FILENAME_KEYWORDS = {
+    "Capitec":       ["capitec"],
+    "FNB":           ["fnb", "firstnational", "first_national"],
+    "Standard Bank": ["standardbank", "standard_bank", "stanbic", "stdbank"],
+    "ABSA":          ["absa"],
+    "Nedbank":       ["nedbank"],
+    "Investec":      ["investec"],
+}
+
+def detect_bank_from_filename(filename: str):
+    """Return detected bank name from filename, or None."""
+    name_lower = filename.lower().replace(" ", "_")
+    for bank, keywords in BANK_FILENAME_KEYWORDS.items():
+        for kw in keywords:
+            if kw in name_lower:
+                return bank
+    return None
 
 # ─── FUNCTIONS ────────────────────────────────────────────────────────────────
 
@@ -187,7 +233,7 @@ def extract_transactions(pdf_bytes, bank):
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("utf-8")
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=4096,
+        max_tokens=8192,  # Increased for long statements (e.g. 8-page Standard Bank)
         messages=[{
             "role": "user",
             "content": [
@@ -207,6 +253,7 @@ def extract_transactions(pdf_bytes, bank):
         }]
     )
     raw = response.content[0].text.strip()
+    # Strip markdown fences if present
     raw = re.sub(r'^```json\s*', '', raw, flags=re.IGNORECASE)
     raw = re.sub(r'^```\s*', '', raw, flags=re.IGNORECASE)
     raw = re.sub(r'```\s*$', '', raw)
@@ -236,7 +283,7 @@ def normalise_date(date_str):
 
 def build_rows(raw, bank):
     """Normalise extracted rows into standard {date, details, amount} format.
-    For Capitec only: explode fee rows."""
+    For Capitec only: explode fee rows into separate Service Fee entries."""
     result = []
     for r in raw:
         date = normalise_date(r.get('date', ''))
@@ -245,13 +292,11 @@ def build_rows(raw, bank):
 
         if bank == "Capitec":
             fee = float(r.get('fee', 0) or 0)
-            is_fee_only = r.get('is_fee_only', False)
-            if is_fee_only:
-                result.append({'date': date, 'details': details, 'amount': amount})
-            else:
-                result.append({'date': date, 'details': details, 'amount': amount})
-                if fee != 0:
-                    result.append({'date': date, 'details': 'Service Fee', 'amount': fee})
+            # Always add the main transaction row
+            result.append({'date': date, 'details': details, 'amount': amount})
+            # If there's also a fee on this row, add a separate Service Fee row
+            if fee != 0:
+                result.append({'date': date, 'details': 'Service Fee', 'amount': fee})
         else:
             result.append({'date': date, 'details': details, 'amount': amount})
     return result
@@ -353,16 +398,37 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
+    # ── Bank mismatch detection ──────────────────────────────────────────────
+    mismatches = []
+    for f in uploaded_files:
+        detected = detect_bank_from_filename(f.name)
+        if detected and detected != selected_bank:
+            mismatches.append((f.name, detected))
+
+    if mismatches:
+        for fname, detected_bank in mismatches:
+            st.warning(
+                f"⚠️ **{fname}** looks like a **{detected_bank}** statement, "
+                f"but **{selected_bank}** is selected. "
+                f"Please switch to **{detected_bank}** in the sidebar before processing."
+            )
+
     already_processed = {f['name'] for f in st.session_state.processed_files}
     new_files = [f for f in uploaded_files if f.name not in already_processed]
 
     if new_files:
-        btn_label = f"▶ Extract {len(new_files)} {selected_bank} file{'s' if len(new_files) > 1 else ''} with Claude AI"
-        if st.button(btn_label, use_container_width=True):
+        # Only show extract button if no mismatches, OR allow override
+        mismatch_names = {m[0] for m in mismatches}
+        safe_files = [f for f in new_files if f.name not in mismatch_names]
+        flagged_files = [f for f in new_files if f.name in mismatch_names]
+
+        if safe_files:
+            btn_label = f"▶ Extract {len(safe_files)} {selected_bank} file{'s' if len(safe_files) > 1 else ''} with Claude AI"
+            if st.button(btn_label, use_container_width=True):
                 progress = st.progress(0)
                 status = st.empty()
 
-                for i, uploaded_file in enumerate(new_files):
+                for i, uploaded_file in enumerate(safe_files):
                     status.markdown(f"🤖 Processing **{uploaded_file.name}** ({selected_bank})...")
                     try:
                         pdf_bytes = uploaded_file.read()
@@ -380,7 +446,7 @@ if uploaded_files:
                             'status': 'done'
                         })
                         st.session_state.all_rows.extend(rows)
-                        progress.progress((i + 1) / len(new_files))
+                        progress.progress((i + 1) / len(safe_files))
 
                     except Exception as e:
                         st.session_state.processed_files.append({
@@ -390,7 +456,50 @@ if uploaded_files:
                             'status': 'error',
                             'error': str(e)
                         })
-                        progress.progress((i + 1) / len(new_files))
+                        progress.progress((i + 1) / len(safe_files))
+
+                status.empty()
+                progress.empty()
+                st.rerun()
+
+        if flagged_files:
+            st.markdown("---")
+            st.markdown("**⚠️ Process anyway with wrong bank?**")
+            st.caption("Only do this if you are sure the bank detection is incorrect.")
+            override_label = f"⚠️ Force extract {len(flagged_files)} flagged file{'s' if len(flagged_files) > 1 else ''} as {selected_bank}"
+            if st.button(override_label, use_container_width=True):
+                progress = st.progress(0)
+                status = st.empty()
+
+                for i, uploaded_file in enumerate(flagged_files):
+                    status.markdown(f"🤖 Processing **{uploaded_file.name}** ({selected_bank})...")
+                    try:
+                        pdf_bytes = uploaded_file.read()
+                        raw = extract_transactions(pdf_bytes, selected_bank)
+                        rows = build_rows(raw, selected_bank)
+                        fee_rows = sum(1 for r in rows if r['details'] == 'Service Fee')
+                        txn_rows = len(rows) - fee_rows
+
+                        st.session_state.processed_files.append({
+                            'name': uploaded_file.name,
+                            'bank': selected_bank,
+                            'rows': rows,
+                            'txn_count': txn_rows,
+                            'fee_count': fee_rows,
+                            'status': 'done'
+                        })
+                        st.session_state.all_rows.extend(rows)
+                        progress.progress((i + 1) / len(flagged_files))
+
+                    except Exception as e:
+                        st.session_state.processed_files.append({
+                            'name': uploaded_file.name,
+                            'bank': selected_bank,
+                            'rows': [],
+                            'status': 'error',
+                            'error': str(e)
+                        })
+                        progress.progress((i + 1) / len(flagged_files))
 
                 status.empty()
                 progress.empty()
