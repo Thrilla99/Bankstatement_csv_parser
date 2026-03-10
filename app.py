@@ -225,7 +225,41 @@ def get_client():
         return None
     return anthropic.Anthropic(api_key=api_key)
 
+
+# --- MOCK DATA ------------------------------------------------------------------
+
+def mock_transactions(bank):
+    from datetime import date, timedelta
+    today = date.today()
+    def d(offset): return (today - timedelta(days=offset)).strftime("%d/%m/%Y")
+
+    base = [
+        {"date": d(20), "details": "POS Purchase - Checkers Waterfall",     "amount": -850.00,  "fee": 0},
+        {"date": d(18), "details": "POS Purchase - Shell Garage Pinetown",   "amount": -450.00,  "fee": 0},
+        {"date": d(15), "details": "Inward EFT Credit - ACME CORP SALARY",   "amount": 32000.00, "fee": 0},
+        {"date": d(14), "details": "POS Purchase - Woolworths Food",          "amount": -1240.50, "fee": 0},
+        {"date": d(12), "details": "Internet Transfer - Rent Payment",        "amount": -9500.00, "fee": 0},
+        {"date": d(10), "details": "POS Purchase - Netflix.com",              "amount": -199.00,  "fee": 0},
+        {"date": d(8),  "details": "Outward EFT - Medical Aid Premium",       "amount": -3200.00, "fee": 0},
+        {"date": d(6),  "details": "POS Purchase - Engen Waterfall",          "amount": -680.00,  "fee": 0},
+        {"date": d(4),  "details": "Inward EFT Credit - FREELANCE CLIENT",    "amount": 8500.00,  "fee": 0},
+        {"date": d(2),  "details": "Monthly Service Fee",                     "amount": -50.00,   "fee": 0},
+    ]
+
+    if bank == "Capitec":
+        base += [
+            {"date": d(19), "details": "Backdated S/Debit - Clothing Account", "amount": -1200.00, "fee": -1.00},
+            {"date": d(11), "details": "Outward EFT - Insurance Premium",       "amount": -850.00,  "fee": -2.00},
+            {"date": d(3),  "details": "International POS Pu - OpenAI ChatGPT", "amount": -350.00,  "fee": -8.32},
+        ]
+
+    return base
+
 def extract_transactions(pdf_bytes, bank):
+    # Mock mode — skip API call entirely
+    if st.session_state.get("mock_mode", False):
+        return mock_transactions(bank)
+
     client = get_client()
     if not client:
         raise ValueError("No API key configured")
@@ -299,6 +333,32 @@ def build_rows(raw, bank):
                 result.append({'date': date, 'details': 'Service Fee', 'amount': fee})
         else:
             result.append({'date': date, 'details': details, 'amount': amount})
+    return deduplicate_rows(result)
+
+
+def deduplicate_rows(rows):
+    # If over 35% of rows are dupes, the PDF was doubled - remove all dupes
+    if not rows:
+        return rows
+    seen = []
+    deduped = []
+    for r in rows:
+        key = (r.get("date",""), r.get("details",""), str(r.get("amount","")))
+        if key not in seen:
+            seen.append(key)
+            deduped.append(r)
+    dupe_ratio = 1 - len(deduped) / max(len(rows), 1)
+    if dupe_ratio > 0.35:
+        return deduped
+    # Otherwise only strip consecutive dupes (safer for legitimately repeated txns)
+    result = [rows[0]]
+    for r in rows[1:]:
+        prev = result[-1]
+        if (r.get("date") == prev.get("date") and
+                r.get("details") == prev.get("details") and
+                str(r.get("amount")) == str(prev.get("amount"))):
+            continue
+        result.append(r)
     return result
 
 def rows_to_csv_bytes(rows):
@@ -368,6 +428,17 @@ with st.sidebar:
 
     st.markdown("**💡 Pastel tip**")
     st.caption("Date + Details + Amount maps directly into Pastel's import format.")
+    st.markdown("---")
+
+    st.markdown("**🧪 Dev / Testing**")
+    mock_mode = st.checkbox(
+        "Mock mode (no API calls)",
+        value=False,
+        key="mock_mode",
+        help="Returns fake transactions instantly. Use to test UI flow without spending tokens."
+    )
+    if mock_mode:
+        st.caption("⚠️ Mock mode ON — no Claude API calls will be made.")
 
 # ─── HEADER ───────────────────────────────────────────────────────────────────
 st.markdown(f"""
@@ -511,7 +582,7 @@ elif uploaded_files:
 
 # ─── PROCESSED FILES ─────────────────────────────────────────────────────────
 if st.session_state.processed_files:
-    st.markdown("####  Processed Files")
+    st.markdown("#### 📂 Processed Files")
     for idx, f in enumerate(st.session_state.processed_files):
         col_a, col_b = st.columns([3, 1])
         with col_a:
