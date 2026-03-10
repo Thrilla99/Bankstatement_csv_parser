@@ -334,7 +334,7 @@ with st.sidebar:
     st.markdown("### ⬡ SA Bank → CSV")
     st.markdown("---")
 
-    st.markdown("**🔑 Anthropic API Key**")
+    st.markdown("**Anthropic API Key**")
     api_key_input = st.text_input(
         "API Key", type="password",
         placeholder="Paste your Anthropic API key",
@@ -343,14 +343,14 @@ with st.sidebar:
     st.caption("Get a key from [console.anthropic.com](https://console.anthropic.com)")
     st.markdown("---")
 
-    st.markdown("**🏦 Select Bank**")
+    st.markdown("**Select Bank**")
     selected_bank = st.selectbox(
         "Bank", BANK_LIST,
         label_visibility="collapsed", key="selected_bank"
     )
     st.markdown("---")
 
-    st.markdown("**📋 Output format**")
+    st.markdown("**Output format**")
     st.caption("Date · Details · Amount")
     st.caption("Signed Amount: positive = money in, negative = money out")
     st.markdown("---")
@@ -360,7 +360,7 @@ with st.sidebar:
         st.caption("Fees are automatically split into separate **Service Fee** rows.")
         st.markdown("---")
 
-    st.markdown("**💡 Pastel tip**")
+    st.markdown("**Pastel format**")
     st.caption("Date + Details + Amount maps directly into Pastel's import format.")
 
 # ─── HEADER ───────────────────────────────────────────────────────────────────
@@ -507,7 +507,7 @@ if uploaded_files:
 
 # ─── PROCESSED FILES ─────────────────────────────────────────────────────────
 if st.session_state.processed_files:
-    st.markdown("#### 📂 Processed Files")
+    st.markdown("####  Processed Files")
     for f in st.session_state.processed_files:
         col_a, col_b = st.columns([3, 1])
         with col_a:
