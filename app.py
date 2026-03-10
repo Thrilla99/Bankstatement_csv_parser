@@ -216,12 +216,30 @@ def extract_transactions(pdf_bytes, bank):
         raise ValueError("No JSON array found in Claude response")
     return json.loads(raw[start:end+1])
 
+def normalise_date(date_str):
+    """Ensure date is in DD/MM/YYYY format. Handles common variants."""
+    if not date_str:
+        return date_str
+    date_str = date_str.strip()
+    # Already correct format DD/MM/YYYY
+    if re.match(r'^\d{2}/\d{2}/\d{4}$', date_str):
+        return date_str
+    # D/MM/YYYY or D/M/YYYY -> pad to DD/MM/YYYY
+    if re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', date_str):
+        parts = date_str.split('/')
+        return f"{int(parts[0]):02d}/{int(parts[1]):02d}/{parts[2]}"
+    # DD/MM/YY -> add 20 prefix for year
+    if re.match(r'^\d{2}/\d{2}/\d{2}$', date_str):
+        parts = date_str.split('/')
+        return f"{parts[0]}/{parts[1]}/20{parts[2]}"
+    return date_str
+
 def build_rows(raw, bank):
     """Normalise extracted rows into standard {date, details, amount} format.
     For Capitec only: explode fee rows."""
     result = []
     for r in raw:
-        date = r.get('date', '')
+        date = normalise_date(r.get('date', ''))
         details = r.get('details', '')
         amount = float(r.get('amount', 0) or 0)
 
@@ -333,7 +351,7 @@ if uploaded_files:
 
     if new_files:
         btn_label = f"▶ Extract {len(new_files)} {selected_bank} file{'s' if len(new_files) > 1 else ''} with Claude AI"
-            if st.button(btn_label, use_container_width=True):
+        if st.button(btn_label, use_container_width=True):
                 progress = st.progress(0)
                 status = st.empty()
 
