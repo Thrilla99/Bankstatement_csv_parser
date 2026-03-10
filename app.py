@@ -289,7 +289,14 @@ with st.sidebar:
     st.markdown("### ⬡ SA Bank → CSV")
     st.markdown("---")
 
-
+    st.markdown("**🔑 Anthropic API Key**")
+    api_key_input = st.text_input(
+        "API Key", type="password",
+        placeholder="Paste your Anthropic API key",
+        label_visibility="collapsed", key="api_key"
+    )
+    st.caption("Get a key from [console.anthropic.com](https://console.anthropic.com)")
+    st.markdown("---")
 
     st.markdown("**🏦 Select Bank**")
     selected_bank = st.selectbox(
