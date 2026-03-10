@@ -328,6 +328,12 @@ if 'processed_files' not in st.session_state:
     st.session_state.processed_files = []
 if 'all_rows' not in st.session_state:
     st.session_state.all_rows = []
+if 'confirmed_bank' not in st.session_state:
+    st.session_state.confirmed_bank = None
+if 'confirmed_files' not in st.session_state:
+    st.session_state.confirmed_files = []
+if 'confirm_pending' not in st.session_state:
+    st.session_state.confirm_pending = False  # True when awaiting user confirmation
 
 # ─── SIDEBAR ──────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -356,11 +362,11 @@ with st.sidebar:
     st.markdown("---")
 
     if selected_bank == "Capitec":
-        st.markdown("**ℹ️ Capitec fee rows**")
+        st.markdown("**Capitec fee rows**")
         st.caption("Fees are automatically split into separate **Service Fee** rows.")
         st.markdown("---")
 
-    st.markdown("**Pastel format**")
+    st.markdown("**Pastel tip**")
     st.caption("Date + Details + Amount maps directly into Pastel's import format.")
 
 # ─── HEADER ───────────────────────────────────────────────────────────────────
@@ -398,116 +404,116 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    # ── Bank mismatch detection ──────────────────────────────────────────────
-    mismatches = []
-    for f in uploaded_files:
-        detected = detect_bank_from_filename(f.name)
-        if detected and detected != selected_bank:
-            mismatches.append((f.name, detected))
-
-    if mismatches:
-        for fname, detected_bank in mismatches:
-            st.warning(
-                f"⚠️ **{fname}** looks like a **{detected_bank}** statement, "
-                f"but **{selected_bank}** is selected. "
-                f"Please switch to **{detected_bank}** in the sidebar before processing."
-            )
-
     already_processed = {f['name'] for f in st.session_state.processed_files}
     new_files = [f for f in uploaded_files if f.name not in already_processed]
 
     if new_files:
-        # Only show extract button if no mismatches, OR allow override
-        mismatch_names = {m[0] for m in mismatches}
-        safe_files = [f for f in new_files if f.name not in mismatch_names]
-        flagged_files = [f for f in new_files if f.name in mismatch_names]
+        # ── Step 1: Confirmation panel (shown before any API call) ───────────
+        if not st.session_state.confirmed_bank:
 
-        if safe_files:
-            btn_label = f"▶ Extract {len(safe_files)} {selected_bank} file{'s' if len(safe_files) > 1 else ''} with Claude AI"
-            if st.button(btn_label, use_container_width=True):
-                progress = st.progress(0)
-                status = st.empty()
-
-                for i, uploaded_file in enumerate(safe_files):
-                    status.markdown(f"🤖 Processing **{uploaded_file.name}** ({selected_bank})...")
-                    try:
-                        pdf_bytes = uploaded_file.read()
-                        raw = extract_transactions(pdf_bytes, selected_bank)
-                        rows = build_rows(raw, selected_bank)
-                        fee_rows = sum(1 for r in rows if r['details'] == 'Service Fee')
-                        txn_rows = len(rows) - fee_rows
-
-                        st.session_state.processed_files.append({
-                            'name': uploaded_file.name,
-                            'bank': selected_bank,
-                            'rows': rows,
-                            'txn_count': txn_rows,
-                            'fee_count': fee_rows,
-                            'status': 'done'
-                        })
-                        st.session_state.all_rows.extend(rows)
-                        progress.progress((i + 1) / len(safe_files))
-
-                    except Exception as e:
-                        st.session_state.processed_files.append({
-                            'name': uploaded_file.name,
-                            'bank': selected_bank,
-                            'rows': [],
-                            'status': 'error',
-                            'error': str(e)
-                        })
-                        progress.progress((i + 1) / len(safe_files))
-
-                status.empty()
-                progress.empty()
-                st.rerun()
-
-        if flagged_files:
             st.markdown("---")
-            st.markdown("**⚠️ Process anyway with wrong bank?**")
-            st.caption("Only do this if you are sure the bank detection is incorrect.")
-            override_label = f"⚠️ Force extract {len(flagged_files)} flagged file{'s' if len(flagged_files) > 1 else ''} as {selected_bank}"
-            if st.button(override_label, use_container_width=True):
-                progress = st.progress(0)
-                status = st.empty()
+            st.markdown("#### ✅ Confirm before extracting")
 
-                for i, uploaded_file in enumerate(flagged_files):
-                    status.markdown(f"🤖 Processing **{uploaded_file.name}** ({selected_bank})...")
-                    try:
-                        pdf_bytes = uploaded_file.read()
-                        raw = extract_transactions(pdf_bytes, selected_bank)
-                        rows = build_rows(raw, selected_bank)
-                        fee_rows = sum(1 for r in rows if r['details'] == 'Service Fee')
-                        txn_rows = len(rows) - fee_rows
+            # Check each file for bank mismatch
+            file_rows = []
+            any_mismatch = False
+            for f in new_files:
+                detected = detect_bank_from_filename(f.name)
+                if detected and detected != selected_bank:
+                    status_icon = "⚠️"
+                    note = f"Filename suggests **{detected}** — you have **{selected_bank}** selected"
+                    any_mismatch = True
+                else:
+                    status_icon = "✅"
+                    note = f"Will be processed as **{selected_bank}**"
+                file_rows.append((status_icon, f.name, note))
 
-                        st.session_state.processed_files.append({
-                            'name': uploaded_file.name,
-                            'bank': selected_bank,
-                            'rows': rows,
-                            'txn_count': txn_rows,
-                            'fee_count': fee_rows,
-                            'status': 'done'
-                        })
-                        st.session_state.all_rows.extend(rows)
-                        progress.progress((i + 1) / len(flagged_files))
+            # Show file summary table
+            for icon, fname, note in file_rows:
+                st.markdown(
+                    f"""<div style="background:#0d0d0d; border:1px solid #1a2a1a; border-radius:6px;
+                    padding:10px 14px; margin-bottom:6px; display:flex; gap:12px; align-items:center;">
+                    <span style="font-size:18px">{icon}</span>
+                    <div>
+                        <div style="color:#ffffff; font-size:13px">{fname}</div>
+                        <div style="color:#4a6a4a; font-size:11px; margin-top:2px">{note}</div>
+                    </div></div>""",
+                    unsafe_allow_html=True
+                )
 
-                    except Exception as e:
-                        st.session_state.processed_files.append({
-                            'name': uploaded_file.name,
-                            'bank': selected_bank,
-                            'rows': [],
-                            'status': 'error',
-                            'error': str(e)
-                        })
-                        progress.progress((i + 1) / len(flagged_files))
+            if any_mismatch:
+                st.warning(
+                    "⚠️ One or more files may not match the selected bank. "
+                    "Processing with the wrong prompt wastes API tokens and gives bad results. "
+                    "Switch banks in the sidebar, or confirm below to proceed anyway."
+                )
 
-                status.empty()
-                progress.empty()
-                st.rerun()
+            st.markdown("")
+            col_confirm, col_cancel = st.columns(2)
+
+            with col_confirm:
+                confirm_label = f"✅ Yes, process as {selected_bank}"
+                if st.button(confirm_label, use_container_width=True):
+                    # Store file bytes now (before rerun loses the uploader state)
+                    st.session_state.confirmed_bank = selected_bank
+                    st.session_state.confirmed_files = [
+                        {'name': f.name, 'bytes': f.read()} for f in new_files
+                    ]
+                    st.rerun()
+
+            with col_cancel:
+                if st.button("✗ Cancel", use_container_width=True):
+                    st.session_state.confirmed_bank = None
+                    st.session_state.confirmed_files = []
+                    st.rerun()
+
+        # ── Step 2: Confirmed — run extraction ───────────────────────────────
+        else:
+            confirmed_bank = st.session_state.confirmed_bank
+            files_to_process = st.session_state.confirmed_files
+
+            progress = st.progress(0)
+            status = st.empty()
+
+            for i, file_data in enumerate(files_to_process):
+                status.markdown(f"🤖 Processing **{file_data['name']}** ({confirmed_bank})...")
+                try:
+                    raw = extract_transactions(file_data['bytes'], confirmed_bank)
+                    rows = build_rows(raw, confirmed_bank)
+                    fee_rows = sum(1 for r in rows if r['details'] == 'Service Fee')
+                    txn_rows = len(rows) - fee_rows
+
+                    st.session_state.processed_files.append({
+                        'name': file_data['name'],
+                        'bank': confirmed_bank,
+                        'rows': rows,
+                        'txn_count': txn_rows,
+                        'fee_count': fee_rows,
+                        'status': 'done'
+                    })
+                    st.session_state.all_rows.extend(rows)
+
+                except Exception as e:
+                    st.session_state.processed_files.append({
+                        'name': file_data['name'],
+                        'bank': confirmed_bank,
+                        'rows': [],
+                        'status': 'error',
+                        'error': str(e)
+                    })
+
+                progress.progress((i + 1) / len(files_to_process))
+
+            # Clear confirmation state
+            st.session_state.confirmed_bank = None
+            st.session_state.confirmed_files = []
+            status.empty()
+            progress.empty()
+            st.rerun()
 
 # ─── PROCESSED FILES ─────────────────────────────────────────────────────────
 if st.session_state.processed_files:
-    st.markdown("####  Processed Files")
+    st.markdown("#### 📂 Processed Files")
     for f in st.session_state.processed_files:
         col_a, col_b = st.columns([3, 1])
         with col_a:
@@ -588,9 +594,10 @@ elif not uploaded_files:
     banks_str = " · ".join(BANK_LIST)
     st.markdown(f"""
     <div style="text-align:center; padding: 60px 40px; color: #2a2a2a; border: 2px dashed #1a1a1a; border-radius: 12px; margin-top: 20px;">
-        <div style="font-size: 48px; margin-bottom: 16px;">🏦</div>
-        <div style="font-size: 16px; color: #444; margin-bottom: 8px;">Select your bank in the sidebar, then upload PDF statements</div>
+        <div style="font-size: 48px; margin-bottom: 16px;">Select the correct bank</div>
+        <div style="font-size: 16px; color: #444; margin-bottom: 8px;">Then upload PDF statements</div>
         <div style="font-size: 12px; color: #333;">{banks_str}</div>
         <div style="font-size: 12px; margin-top: 8px;">Output: Date · Details · Amount (signed) · Pastel-ready</div>
     </div>
     """, unsafe_allow_html=True)
+    
