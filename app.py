@@ -464,7 +464,11 @@ if 'confirmed_bank' not in st.session_state:
 if 'confirmed_files' not in st.session_state:
     st.session_state.confirmed_files = []
 if 'confirm_pending' not in st.session_state:
-    st.session_state.confirm_pending = False  # True when awaiting user confirmation
+    st.session_state.confirm_pending = False
+if 'history' not in st.session_state:
+    st.session_state.history = []
+if 'cached_upload_bytes' not in st.session_state:
+    st.session_state.cached_upload_bytes = {}
 
 # ─── SIDEBAR ──────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -536,6 +540,17 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True,
     label_visibility="collapsed"
 )
+
+# Cache bytes immediately so bank-switch rerun doesn't lose files
+if uploaded_files:
+    for uf in uploaded_files:
+        if uf.name not in st.session_state.cached_upload_bytes:
+            st.session_state.cached_upload_bytes[uf.name] = uf.read()
+    current_names = {uf.name for uf in uploaded_files}
+    st.session_state.cached_upload_bytes = {
+        k: v for k, v in st.session_state.cached_upload_bytes.items()
+        if k in current_names
+    }
 
 # ── Step 2: Extraction (runs on rerun AFTER confirm — uploader will be empty) ──
 if st.session_state.confirmed_bank and st.session_state.confirmed_files:
@@ -618,9 +633,22 @@ if st.session_state.confirmed_bank and st.session_state.confirmed_files:
     elapsed_str = f"{total_elapsed // 60}m {total_elapsed % 60}s" if total_elapsed >= 60 else f"{total_elapsed}s"
     timing.caption(f"Done in {elapsed_str}")
 
-    # Clear confirmation state and rerun to show results
+    # Save completed session to history (keep last 3)
+    done_files = [f for f in st.session_state.processed_files if f['status'] == 'done']
+    if done_files:
+        import copy
+        from datetime import datetime as _dt
+        history_entry = {
+            'timestamp': _dt.now().strftime("%d %b %Y, %H:%M"),
+            'bank': confirmed_bank,
+            'files': copy.deepcopy(done_files)
+        }
+        st.session_state.history.insert(0, history_entry)
+        st.session_state.history = st.session_state.history[:3]
+
     st.session_state.confirmed_bank = None
     st.session_state.confirmed_files = []
+    st.session_state.cached_upload_bytes = {}
     status.empty()
     progress.empty()
     st.rerun()
@@ -676,7 +704,8 @@ elif uploaded_files:
                 # Read all bytes NOW before rerun clears the uploader
                 st.session_state.confirmed_bank = selected_bank
                 st.session_state.confirmed_files = [
-                    {'name': f.name, 'bytes': f.read()} for f in new_files
+                    {'name': f.name, 'bytes': st.session_state.cached_upload_bytes.get(f.name, b'')}
+                    for f in new_files
                 ]
                 st.rerun()
 
@@ -686,93 +715,136 @@ elif uploaded_files:
                 st.session_state.confirmed_files = []
                 st.rerun()
 
-# ─── PROCESSED FILES ─────────────────────────────────────────────────────────
-if st.session_state.processed_files:
-    st.markdown("#### Processed Files")
-    for idx, f in enumerate(st.session_state.processed_files):
-        col_a, col_b = st.columns([3, 1])
-        with col_a:
-            bank_label = f.get('bank', '')
-            if f['status'] == 'done':
-                fee_info = f" + {f['fee_count']} fee rows" if f['fee_count'] > 0 else ""
-                vision_tag = " [vision]" if f.get("vision") else ""
-                elapsed_tag = f" — {f['elapsed']}s" if f.get("elapsed") else ""
-                st.success(f"**{f['name']}** [{bank_label}]{vision_tag} — {f['txn_count']} transactions{fee_info} = {len(f['rows'])} total{elapsed_tag}")
-            else:
-                st.error(f"**{f['name']}** [{bank_label}] — {f.get('error', 'Unknown error')}")
-        with col_b:
-            if f['status'] == 'done':
-                csv_bytes = rows_to_csv_bytes(f['rows'])
+# ─── TABS ─────────────────────────────────────────────────────────────────────
+tab_results, tab_history = st.tabs(["Results", "History"])
+
+with tab_results:
+    if st.session_state.processed_files:
+        col_hdr, col_clr = st.columns([4, 1])
+        with col_hdr:
+            st.markdown("#### Processed Files")
+        with col_clr:
+            if st.button("Clear files", use_container_width=True):
+                st.session_state.processed_files = []
+                st.session_state.all_rows = []
+                st.rerun()
+
+        for idx, f in enumerate(st.session_state.processed_files):
+            col_a, col_b = st.columns([3, 1])
+            with col_a:
+                bank_label = f.get('bank', '')
+                if f['status'] == 'done':
+                    fee_info = f" + {f['fee_count']} fee rows" if f['fee_count'] > 0 else ""
+                    vision_tag = " [vision]" if f.get("vision") else ""
+                    elapsed_tag = f" — {f['elapsed']}s" if f.get("elapsed") else ""
+                    st.success(f"**{f['name']}** [{bank_label}]{vision_tag} — {f['txn_count']} transactions{fee_info} = {len(f['rows'])} total{elapsed_tag}")
+                else:
+                    st.error(f"**{f['name']}** [{bank_label}] — {f.get('error', 'Unknown error')}")
+            with col_b:
+                if f['status'] == 'done':
+                    csv_bytes = rows_to_csv_bytes(f['rows'])
+                    st.download_button(
+                        "Download CSV",
+                        data=csv_bytes,
+                        file_name=f['name'].replace('.pdf', '.csv'),
+                        mime='text/csv',
+                        key=f"dl_{idx}_{f['name']}"
+                    )
+
+        if st.session_state.all_rows:
+            st.markdown("---")
+            st.markdown("#### Download")
+            col1, col2 = st.columns(2)
+            with col1:
+                all_csv = rows_to_csv_bytes(st.session_state.all_rows)
                 st.download_button(
-                    "Download CSV",
-                    data=csv_bytes,
-                    file_name=f['name'].replace('.pdf', '.csv'),
-                    mime='text/csv',
-                    key=f"dl_{idx}_{f['name']}"
-                )
-
-    # ─── DOWNLOADS ───────────────────────────────────────────────────────────
-    if st.session_state.all_rows:
-        st.markdown("---")
-        st.markdown("#### Download")
-        col1, col2 = st.columns(2)
-
-        with col1:
-            all_csv = rows_to_csv_bytes(st.session_state.all_rows)
-            st.download_button(
-                "Download All Combined",
-                data=all_csv,
-                file_name="sa_bank_all_transactions.csv",
-                mime='text/csv',
-                use_container_width=True
-            )
-
-        with col2:
-            by_month = {}
-            for row in st.session_state.all_rows:
-                m = get_month_key(row['date'])
-                by_month.setdefault(m, []).append(row)
-            month_options = sorted(by_month.keys())
-            selected_month = st.selectbox("Download specific month:", ['All months'] + month_options)
-            if selected_month != 'All months':
-                month_csv = rows_to_csv_bytes(by_month[selected_month])
-                st.download_button(
-                    f"Download {selected_month}",
-                    data=month_csv,
-                    file_name=f"sa_bank_{selected_month}.csv",
+                    "Download All Combined",
+                    data=all_csv,
+                    file_name="sa_bank_all_transactions.csv",
                     mime='text/csv',
                     use_container_width=True
                 )
+            with col2:
+                by_month = {}
+                for row in st.session_state.all_rows:
+                    m = get_month_key(row['date'])
+                    by_month.setdefault(m, []).append(row)
+                month_options = sorted(by_month.keys())
+                selected_month = st.selectbox("Download specific month:", ['All months'] + month_options)
+                if selected_month != 'All months':
+                    month_csv = rows_to_csv_bytes(by_month[selected_month])
+                    st.download_button(
+                        f"Download {selected_month}",
+                        data=month_csv,
+                        file_name=f"sa_bank_{selected_month}.csv",
+                        mime='text/csv',
+                        use_container_width=True
+                    )
 
-        # ─── PREVIEW ─────────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### Preview")
-        preview_rows = st.session_state.all_rows[:50]
-        table_data = []
-        for r in preview_rows:
-            amt = r['amount']
-            table_data.append({
-                'Date': r['date'],
-                'Details': r['details'],
-                'Amount': f"+{amt}" if isinstance(amt, (int, float)) and amt > 0 else str(amt)
-            })
-        if table_data:
-            st.dataframe(table_data, use_container_width=True, height=400)
-            if len(st.session_state.all_rows) > 50:
-                st.caption(f"Showing first 50 of {len(st.session_state.all_rows)} rows")
+            st.markdown("---")
+            st.markdown("#### Preview")
+            preview_rows = st.session_state.all_rows[:50]
+            table_data = []
+            for r in preview_rows:
+                amt = r['amount']
+                table_data.append({
+                    'Date': r['date'],
+                    'Details': r['details'],
+                    'Amount': f"+{amt}" if isinstance(amt, (int, float)) and amt > 0 else str(amt)
+                })
+            if table_data:
+                st.dataframe(table_data, use_container_width=True, height=400)
+                if len(st.session_state.all_rows) > 50:
+                    st.caption(f"Showing first 50 of {len(st.session_state.all_rows)} rows")
 
-    st.markdown("---")
-    if st.button("Clear all and start over"):
-        st.session_state.processed_files = []
-        st.session_state.all_rows = []
-        st.rerun()
+    elif not uploaded_files and not st.session_state.confirmed_files:
+        banks_str = " · ".join(BANK_LIST)
+        st.markdown(
+            f'<div style="text-align:center; padding: 60px 40px; color: #2a2a2a; border: 2px dashed #1a1a1a; border-radius: 12px; margin-top: 20px;">'
+            f'<div style="font-size: 16px; color: #444; margin-bottom: 8px; margin-top: 8px;">Select your bank in the sidebar, then upload PDF statements</div>'
+            f'<div style="font-size: 12px; color: #333;">{banks_str}</div>'
+            f'<div style="font-size: 12px; margin-top: 8px;">Output: Date · Details · Amount (signed) · Pastel-ready</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
-elif not uploaded_files:
-    banks_str = " · ".join(BANK_LIST)
-    st.markdown(f"""
-    <div style="text-align:center; padding: 60px 40px; color: #2a2a2a; border: 2px dashed #1a1a1a; border-radius: 12px; margin-top: 20px;">
-        <div style="font-size: 16px; color: #444; margin-bottom: 8px; margin-top: 8px;">Select your bank in the sidebar, then upload PDF statements</div>
-        <div style="font-size: 12px; color: #333;">{banks_str}</div>
-        <div style="font-size: 12px; margin-top: 8px;">Output: Date · Details · Amount (signed) · Pastel-ready</div>
-    </div>
-    """, unsafe_allow_html=True)
+with tab_history:
+    if not st.session_state.history:
+        st.markdown(
+            '<div style="text-align:center; padding: 60px 40px; color: #2a2a2a; border: 2px dashed #1a1a1a; border-radius: 12px; margin-top: 20px;">'
+            '<div style="font-size: 16px; color: #444; margin-bottom: 8px; margin-top: 8px;">No history yet — completed sessions will appear here</div>'
+            '<div style="font-size: 12px; color: #333;">Last 3 sessions are saved automatically</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        for hi, entry in enumerate(st.session_state.history):
+            st.markdown(f"**{entry['timestamp']}** — {entry['bank']} — {len(entry['files'])} file{'s' if len(entry['files']) > 1 else ''}")
+            for fi, f in enumerate(entry['files']):
+                fee_info = f" + {f.get('fee_count', 0)} fee rows" if f.get('fee_count', 0) > 0 else ""
+                col_a, col_b = st.columns([3, 1])
+                with col_a:
+                    st.markdown(f"&nbsp;&nbsp;&nbsp;{f['name']} — {f['txn_count']} transactions{fee_info}")
+                with col_b:
+                    hist_csv = rows_to_csv_bytes(f['rows'])
+                    st.download_button(
+                        "Download CSV",
+                        data=hist_csv,
+                        file_name=f['name'].replace('.pdf', '.csv'),
+                        mime='text/csv',
+                        key=f"hist_{hi}_{fi}_{f['name']}"
+                    )
+            if len(entry['files']) > 1:
+                all_session_rows = []
+                for f in entry['files']:
+                    all_session_rows.extend(f['rows'])
+                session_csv = rows_to_csv_bytes(all_session_rows)
+                ts_safe = entry['timestamp'].replace(', ', '_').replace(' ', '_').replace(':', '')
+                st.download_button(
+                    "Download all from this session",
+                    data=session_csv,
+                    file_name=f"session_{ts_safe}.csv",
+                    mime='text/csv',
+                    key=f"hist_all_{hi}"
+                )
+            st.markdown("---")
