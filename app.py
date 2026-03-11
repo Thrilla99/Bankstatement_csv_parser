@@ -1,13 +1,13 @@
 import streamlit as st
 import anthropic
 import base64
-import json, csv, io, re
+import json, csv, io, re, time
 from datetime import datetime
 
 # ─── PAGE CONFIG ─────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="SA Bank → CSV",
-    page_icon="⬡",
+    page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -295,6 +295,52 @@ def is_scanned_pdf(pdf_bytes):
     except Exception:
         return True
 
+def pdf_to_images_b64(pdf_bytes):
+    """Convert each page of a PDF to a base64-encoded PNG. Requires pymupdf (fitz)."""
+    import fitz  # pymupdf
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    images = []
+    for page in doc:
+        mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better OCR quality
+        pix = page.get_pixmap(matrix=mat)
+        png_bytes = pix.tobytes("png")
+        images.append(base64.standard_b64encode(png_bytes).decode("utf-8"))
+    doc.close()
+    return images
+
+def extract_transactions_vision(pdf_bytes, bank):
+    """Send PDF pages as images to Claude vision when normal text extraction fails."""
+    client = get_client()
+    if not client:
+        raise ValueError("No API key configured")
+    prompt = PROMPTS[bank]
+    images_b64 = pdf_to_images_b64(pdf_bytes)
+    content_blocks = []
+    for img_b64 in images_b64:
+        content_blocks.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": img_b64
+            }
+        })
+    content_blocks.append({"type": "text", "text": prompt})
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=16000,
+        messages=[{"role": "user", "content": content_blocks}]
+    )
+    raw = response.content[0].text.strip()
+    raw = re.sub(r'^```json\s*', '', raw, flags=re.IGNORECASE)
+    raw = re.sub(r'^```\s*', '', raw, flags=re.IGNORECASE)
+    raw = re.sub(r'```\s*$', '', raw)
+    start = raw.find('[')
+    end = raw.rfind(']')
+    if start == -1 or end == -1:
+        raise ValueError("No JSON array found in Claude vision response")
+    return json.loads(raw[start:end+1])
+
 def extract_transactions(pdf_bytes, bank):
     # Mock mode — skip API call entirely
     if st.session_state.get("mock_mode", False):
@@ -437,7 +483,7 @@ if 'confirm_pending' not in st.session_state:
 
 # ─── SIDEBAR ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### ⬡ SA Bank → CSV")
+    st.markdown("### SA Bank → CSV")
     st.markdown("---")
 
     st.markdown("**Anthropic API Key**")
@@ -449,20 +495,20 @@ with st.sidebar:
     st.caption("Get a key from [console.anthropic.com](https://console.anthropic.com)")
     st.markdown("---")
 
-    st.markdown("**elect Bank**")
+    st.markdown("**Select Bank**")
     selected_bank = st.selectbox(
         "Bank", BANK_LIST,
         label_visibility="collapsed", key="selected_bank"
     )
     st.markdown("---")
 
-    st.markdown("** Output format**")
+    st.markdown("**Output format**")
     st.caption("Date · Details · Amount")
     st.caption("Signed Amount: positive = money in, negative = money out")
     st.markdown("---")
 
     if selected_bank == "Capitec":
-        st.markdown("** Capitec fee rows**")
+        st.markdown("**Capitec fee rows**")
         st.caption("Fees are automatically split into separate **Service Fee** rows.")
         st.markdown("---")
 
@@ -470,7 +516,7 @@ with st.sidebar:
     st.caption("Date + Details + Amount maps directly into Pastel's import format.")
     st.markdown("---")
 
-    st.markdown("** Dev / Testing**")
+    st.markdown("**Dev / Testing**")
     mock_mode = st.checkbox(
         "Mock mode (no API calls)",
         value=False,
@@ -478,12 +524,12 @@ with st.sidebar:
         help="Returns fake transactions instantly. Use to test UI flow without spending tokens."
     )
     if mock_mode:
-        st.caption("⚠️ Mock mode ON — no Claude API calls will be made.")
+        st.caption("Mock mode ON — no Claude API calls will be made.")
 
 # ─── HEADER ───────────────────────────────────────────────────────────────────
 st.markdown(f"""
 <div class="main-header">
-    <div class="header-title">⬡ SA Bank Statement → CSV</div>
+    <div class="header-title">SA Bank Statement → CSV</div>
     <div class="header-sub">Multi-Bank Extractor · Capitec · Investec · FNB · ABSA · Nedbank · Standard Bank · Powered by Claude AI</div>
 </div>
 """, unsafe_allow_html=True)
@@ -506,7 +552,7 @@ if st.session_state.all_rows:
     st.markdown("")
 
 # ─── UPLOAD ───────────────────────────────────────────────────────────────────
-st.markdown(f"#### 📄 Upload {selected_bank} Statements")
+st.markdown(f"#### Upload {selected_bank} Statements")
 uploaded_files = st.file_uploader(
     f"Drop {selected_bank} PDF bank statements here",
     type=["pdf"],
@@ -519,19 +565,47 @@ if st.session_state.confirmed_bank and st.session_state.confirmed_files:
     confirmed_bank = st.session_state.confirmed_bank
     files_to_process = st.session_state.confirmed_files
 
-    st.markdown(f"#### 🤖 Extracting {len(files_to_process)} file{'s' if len(files_to_process) > 1 else ''} as {confirmed_bank}...")
+    total_files = len(files_to_process)
+    # Estimate ~25s per file for text PDFs, ~45s for vision (scanned)
+    est_seconds = total_files * 25
+    est_str = f"{est_seconds // 60}m {est_seconds % 60}s" if est_seconds >= 60 else f"~{est_seconds}s"
+
+    st.markdown(f"#### Extracting {total_files} file{'s' if total_files > 1 else ''} as {confirmed_bank}")
     progress = st.progress(0)
     status = st.empty()
+    timing = st.empty()
+    start_all = time.time()
 
     for i, file_data in enumerate(files_to_process):
-        status.markdown(f"Processing **{file_data['name']}** ({i+1}/{len(files_to_process)})...")
+        file_start = time.time()
+        files_left = total_files - i
+        elapsed = time.time() - start_all
+        avg_per_file = (elapsed / i) if i > 0 else 25
+        est_remaining = int(avg_per_file * files_left)
+        est_rem_str = f"{est_remaining // 60}m {est_remaining % 60}s" if est_remaining >= 60 else f"{est_remaining}s"
+        eta_label = f"Est. remaining: {est_rem_str}" if i > 0 else f"Est. total: {est_str}"
+
+        status.markdown(f"Processing **{file_data['name']}** ({i+1}/{total_files})")
+        timing.caption(eta_label)
+
         try:
-            if is_scanned_pdf(file_data['bytes']):
-                raise ValueError('SCANNED_PDF')
-            raw = extract_transactions(file_data['bytes'], confirmed_bank)
+            scanned = is_scanned_pdf(file_data['bytes'])
+            if scanned:
+                status.markdown(f"Processing **{file_data['name']}** ({i+1}/{total_files}) — scanned PDF detected, using vision...")
+                timing.caption(f"{eta_label}  |  Vision mode active (takes ~45s per file)")
+                try:
+                    raw = extract_transactions_vision(file_data['bytes'], confirmed_bank)
+                    vision_used = True
+                except Exception as ve:
+                    raise ValueError(f"VISION_FAILED: {ve}")
+            else:
+                raw = extract_transactions(file_data['bytes'], confirmed_bank)
+                vision_used = False
+
             rows = build_rows(raw, confirmed_bank)
             fee_rows = sum(1 for r in rows if r['details'] == 'Service Fee')
             txn_rows = len(rows) - fee_rows
+            elapsed_file = int(time.time() - file_start)
 
             st.session_state.processed_files.append({
                 'name': file_data['name'],
@@ -539,30 +613,33 @@ if st.session_state.confirmed_bank and st.session_state.confirmed_files:
                 'rows': rows,
                 'txn_count': txn_rows,
                 'fee_count': fee_rows,
-                'status': 'done'
+                'status': 'done',
+                'vision': vision_used,
+                'elapsed': elapsed_file
             })
             st.session_state.all_rows.extend(rows)
 
         except Exception as e:
             error_msg = str(e)
-            if error_msg == "SCANNED_PDF":
-                st.warning(
-                    f"**{file_data['name']}** is a scanned / image-based PDF with no readable text layer.\n\n"
-                    "**To fix this:**\n"
-                    "1. Go to https://www.ilovepdf.com/ocr-pdf (free, no sign-up)\n"
-                    "2. Upload your PDF and click **Convert to PDF**\n"
-                    "3. Download the result and re-upload it here\n\n"
-                    "The OCR step adds a text layer so the app can read your transactions."
+            if error_msg.startswith("VISION_FAILED"):
+                detail = error_msg.replace("VISION_FAILED: ", "")
+                st.error(
+                    f"**{file_data['name']}** — vision extraction also failed. "
+                    f"The scan quality may be too low to read.\n\nDetail: {detail}"
                 )
             st.session_state.processed_files.append({
                 'name': file_data['name'],
                 'bank': confirmed_bank,
                 'rows': [],
                 'status': 'error',
-                'error': 'Scanned PDF — needs OCR. See instructions above.' if error_msg == 'SCANNED_PDF' else error_msg
+                'error': error_msg
             })
 
-        progress.progress((i + 1) / len(files_to_process))
+        progress.progress((i + 1) / total_files)
+
+    total_elapsed = int(time.time() - start_all)
+    elapsed_str = f"{total_elapsed // 60}m {total_elapsed % 60}s" if total_elapsed >= 60 else f"{total_elapsed}s"
+    timing.caption(f"Done in {elapsed_str}")
 
     # Clear confirmation state and rerun to show results
     st.session_state.confirmed_bank = None
@@ -578,7 +655,7 @@ elif uploaded_files:
 
     if new_files:
         st.markdown("---")
-        st.markdown("#### ✅ Confirm before extracting")
+        st.markdown("#### Confirm before extracting")
 
         # Check each file for bank mismatch
         file_rows = []
@@ -586,11 +663,11 @@ elif uploaded_files:
         for f in new_files:
             detected = detect_bank_from_filename(f.name)
             if detected and detected != selected_bank:
-                status_icon = "⚠️"
+                status_icon = "[!]"
                 note = f"Filename suggests **{detected}** — you have **{selected_bank}** selected"
                 any_mismatch = True
             else:
-                status_icon = "✅"
+                status_icon = "[ok]"
                 note = f"Will be processed as **{selected_bank}**"
             file_rows.append((status_icon, f.name, note))
 
@@ -609,7 +686,7 @@ elif uploaded_files:
 
         if any_mismatch:
             st.warning(
-                "⚠️ One or more files may not match the selected bank. "
+                "One or more files may not match the selected bank. "
                 "Processing with the wrong prompt wastes API tokens and gives bad results. "
                 "Switch the bank in the sidebar, or confirm below to proceed anyway."
             )
@@ -618,7 +695,7 @@ elif uploaded_files:
         col_confirm, col_cancel = st.columns(2)
 
         with col_confirm:
-            if st.button(f"✅ Yes, process {len(new_files)} file{'s' if len(new_files) > 1 else ''} as {selected_bank}", use_container_width=True):
+            if st.button("Confirm — process files as " + selected_bank, use_container_width=True):
                 # Read all bytes NOW before rerun clears the uploader
                 st.session_state.confirmed_bank = selected_bank
                 st.session_state.confirmed_files = [
@@ -634,21 +711,23 @@ elif uploaded_files:
 
 # ─── PROCESSED FILES ─────────────────────────────────────────────────────────
 if st.session_state.processed_files:
-    st.markdown("#### 📂 Processed Files")
+    st.markdown("#### Processed Files")
     for idx, f in enumerate(st.session_state.processed_files):
         col_a, col_b = st.columns([3, 1])
         with col_a:
             bank_label = f.get('bank', '')
             if f['status'] == 'done':
                 fee_info = f" + {f['fee_count']} fee rows" if f['fee_count'] > 0 else ""
-                st.success(f"✅ **{f['name']}** [{bank_label}] — {f['txn_count']} transactions{fee_info} = {len(f['rows'])} total")
+                vision_tag = " [vision]" if f.get("vision") else ""
+                elapsed_tag = f" — {f['elapsed']}s" if f.get("elapsed") else ""
+                st.success(f"**{f['name']}** [{bank_label}]{vision_tag} — {f['txn_count']} transactions{fee_info} = {len(f['rows'])} total{elapsed_tag}")
             else:
-                st.error(f"❌ **{f['name']}** [{bank_label}] — {f.get('error', 'Unknown error')}")
+                st.error(f"**{f['name']}** [{bank_label}] — {f.get('error', 'Unknown error')}")
         with col_b:
             if f['status'] == 'done':
                 csv_bytes = rows_to_csv_bytes(f['rows'])
                 st.download_button(
-                    "⬇ CSV",
+                    "Download CSV",
                     data=csv_bytes,
                     file_name=f['name'].replace('.pdf', '.csv'),
                     mime='text/csv',
@@ -658,13 +737,13 @@ if st.session_state.processed_files:
     # ─── DOWNLOADS ───────────────────────────────────────────────────────────
     if st.session_state.all_rows:
         st.markdown("---")
-        st.markdown("#### ⬇ Download")
+        st.markdown("#### Download")
         col1, col2 = st.columns(2)
 
         with col1:
             all_csv = rows_to_csv_bytes(st.session_state.all_rows)
             st.download_button(
-                "⬇ Download All Combined",
+                "Download All Combined",
                 data=all_csv,
                 file_name="sa_bank_all_transactions.csv",
                 mime='text/csv',
@@ -681,7 +760,7 @@ if st.session_state.processed_files:
             if selected_month != 'All months':
                 month_csv = rows_to_csv_bytes(by_month[selected_month])
                 st.download_button(
-                    f"⬇ Download {selected_month}",
+                    f"Download {selected_month}",
                     data=month_csv,
                     file_name=f"sa_bank_{selected_month}.csv",
                     mime='text/csv',
@@ -690,7 +769,7 @@ if st.session_state.processed_files:
 
         # ─── PREVIEW ─────────────────────────────────────────────────────────
         st.markdown("---")
-        st.markdown("#### 👁 Preview")
+        st.markdown("#### Preview")
         preview_rows = st.session_state.all_rows[:50]
         table_data = []
         for r in preview_rows:
@@ -706,7 +785,7 @@ if st.session_state.processed_files:
                 st.caption(f"Showing first 50 of {len(st.session_state.all_rows)} rows")
 
     st.markdown("---")
-    if st.button("🗑 Clear all and start over"):
+    if st.button("Clear all and start over"):
         st.session_state.processed_files = []
         st.session_state.all_rows = []
         st.rerun()
@@ -715,8 +794,7 @@ elif not uploaded_files:
     banks_str = " · ".join(BANK_LIST)
     st.markdown(f"""
     <div style="text-align:center; padding: 60px 40px; color: #2a2a2a; border: 2px dashed #1a1a1a; border-radius: 12px; margin-top: 20px;">
-        <div style="font-size: 48px; margin-bottom: 16px;">Select a bank BEFORE uploading a pdf</div>
-        <div style="font-size: 16px; color: #444; margin-bottom: 8px;">Select your bank in the sidebar, then upload PDF statements</div>
+        <div style="font-size: 16px; color: #444; margin-bottom: 8px; margin-top: 8px;">Select your bank in the sidebar, then upload PDF statements</div>
         <div style="font-size: 12px; color: #333;">{banks_str}</div>
         <div style="font-size: 12px; margin-top: 8px;">Output: Date · Details · Amount (signed) · Pastel-ready</div>
     </div>
