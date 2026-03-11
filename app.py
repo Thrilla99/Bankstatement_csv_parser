@@ -46,6 +46,23 @@ div[data-testid="stSidebar"] { background-color: #080808; border-right: 1px soli
     display: inline-block; padding: 2px 10px; border-radius: 4px;
     font-size: 11px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase;
 }
+/* Taller drag-and-drop upload zone */
+[data-testid="stFileUploader"] section {
+    min-height: 180px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px dashed #2a3a2a !important;
+    border-radius: 10px !important;
+    background: #0d0d0d !important;
+    transition: border-color 0.2s;
+}
+[data-testid="stFileUploader"] section:hover {
+    border-color: #4a9e4a !important;
+}
+[data-testid="stFileUploader"] section > div {
+    padding: 32px 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -253,34 +270,6 @@ def get_client():
     return anthropic.Anthropic(api_key=api_key)
 
 
-# --- MOCK DATA ------------------------------------------------------------------
-
-def mock_transactions(bank):
-    from datetime import date, timedelta
-    today = date.today()
-    def d(offset): return (today - timedelta(days=offset)).strftime("%d/%m/%Y")
-
-    base = [
-        {"date": d(20), "details": "POS Purchase - Checkers Waterfall",     "amount": -850.00,  "fee": 0},
-        {"date": d(18), "details": "POS Purchase - Shell Garage Pinetown",   "amount": -450.00,  "fee": 0},
-        {"date": d(15), "details": "Inward EFT Credit - ACME CORP SALARY",   "amount": 32000.00, "fee": 0},
-        {"date": d(14), "details": "POS Purchase - Woolworths Food",          "amount": -1240.50, "fee": 0},
-        {"date": d(12), "details": "Internet Transfer - Rent Payment",        "amount": -9500.00, "fee": 0},
-        {"date": d(10), "details": "POS Purchase - Netflix.com",              "amount": -199.00,  "fee": 0},
-        {"date": d(8),  "details": "Outward EFT - Medical Aid Premium",       "amount": -3200.00, "fee": 0},
-        {"date": d(6),  "details": "POS Purchase - Engen Waterfall",          "amount": -680.00,  "fee": 0},
-        {"date": d(4),  "details": "Inward EFT Credit - FREELANCE CLIENT",    "amount": 8500.00,  "fee": 0},
-        {"date": d(2),  "details": "Monthly Service Fee",                     "amount": -50.00,   "fee": 0},
-    ]
-
-    if bank == "Capitec":
-        base += [
-            {"date": d(19), "details": "Backdated S/Debit - Clothing Account", "amount": -1200.00, "fee": -1.00},
-            {"date": d(11), "details": "Outward EFT - Insurance Premium",       "amount": -850.00,  "fee": -2.00},
-            {"date": d(3),  "details": "International POS Pu - OpenAI ChatGPT", "amount": -350.00,  "fee": -8.32},
-        ]
-
-    return base
 
 
 def is_scanned_pdf(pdf_bytes):
@@ -342,10 +331,6 @@ def extract_transactions_vision(pdf_bytes, bank):
     return json.loads(raw[start:end+1])
 
 def extract_transactions(pdf_bytes, bank):
-    # Mock mode — skip API call entirely
-    if st.session_state.get("mock_mode", False):
-        return mock_transactions(bank)
-
     client = get_client()
     if not client:
         raise ValueError("No API key configured")
@@ -516,15 +501,7 @@ with st.sidebar:
     st.caption("Date + Details + Amount maps directly into Pastel's import format.")
     st.markdown("---")
 
-    st.markdown("**Dev / Testing**")
-    mock_mode = st.checkbox(
-        "Mock mode (no API calls)",
-        value=False,
-        key="mock_mode",
-        help="Returns fake transactions instantly. Use to test UI flow without spending tokens."
-    )
-    if mock_mode:
-        st.caption("Mock mode ON — no Claude API calls will be made.")
+
 
 # ─── HEADER ───────────────────────────────────────────────────────────────────
 st.markdown(f"""
@@ -794,7 +771,7 @@ elif not uploaded_files:
     banks_str = " · ".join(BANK_LIST)
     st.markdown(f"""
     <div style="text-align:center; padding: 60px 40px; color: #2a2a2a; border: 2px dashed #1a1a1a; border-radius: 12px; margin-top: 20px;">
-        <div style="font-size: 24px; color: #444; margin-bottom: 8px; margin-top: 8px;">Select your bank in the sidebar BEFORE you upload PDF statements</div>
+        <div style="font-size: 16px; color: #444; margin-bottom: 8px; margin-top: 8px;">Select your bank in the sidebar, then upload PDF statements</div>
         <div style="font-size: 12px; color: #333;">{banks_str}</div>
         <div style="font-size: 12px; margin-top: 8px;">Output: Date · Details · Amount (signed) · Pastel-ready</div>
     </div>
