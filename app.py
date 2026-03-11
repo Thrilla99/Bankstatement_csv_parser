@@ -282,6 +282,19 @@ def mock_transactions(bank):
 
     return base
 
+
+def is_scanned_pdf(pdf_bytes):
+    """Return True if the PDF has no meaningful text layer (i.e. it is a scanned image)."""
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+        return len(text.strip()) < 100
+    except Exception:
+        return True
+
 def extract_transactions(pdf_bytes, bank):
     # Mock mode — skip API call entirely
     if st.session_state.get("mock_mode", False):
@@ -427,7 +440,7 @@ with st.sidebar:
     st.markdown("### ⬡ SA Bank → CSV")
     st.markdown("---")
 
-    st.markdown("**🔑 Anthropic API Key**")
+    st.markdown("**Anthropic API Key**")
     api_key_input = st.text_input(
         "API Key", type="password",
         placeholder="Paste your Anthropic API key",
@@ -436,28 +449,28 @@ with st.sidebar:
     st.caption("Get a key from [console.anthropic.com](https://console.anthropic.com)")
     st.markdown("---")
 
-    st.markdown("**🏦 Select Bank**")
+    st.markdown("**elect Bank**")
     selected_bank = st.selectbox(
         "Bank", BANK_LIST,
         label_visibility="collapsed", key="selected_bank"
     )
     st.markdown("---")
 
-    st.markdown("**📋 Output format**")
+    st.markdown("** Output format**")
     st.caption("Date · Details · Amount")
     st.caption("Signed Amount: positive = money in, negative = money out")
     st.markdown("---")
 
     if selected_bank == "Capitec":
-        st.markdown("**ℹ️ Capitec fee rows**")
+        st.markdown("** Capitec fee rows**")
         st.caption("Fees are automatically split into separate **Service Fee** rows.")
         st.markdown("---")
 
-    st.markdown("**💡 Pastel tip**")
+    st.markdown("**Pastel tip**")
     st.caption("Date + Details + Amount maps directly into Pastel's import format.")
     st.markdown("---")
 
-    st.markdown("**🧪 Dev / Testing**")
+    st.markdown("** Dev / Testing**")
     mock_mode = st.checkbox(
         "Mock mode (no API calls)",
         value=False,
@@ -513,6 +526,8 @@ if st.session_state.confirmed_bank and st.session_state.confirmed_files:
     for i, file_data in enumerate(files_to_process):
         status.markdown(f"Processing **{file_data['name']}** ({i+1}/{len(files_to_process)})...")
         try:
+            if is_scanned_pdf(file_data['bytes']):
+                raise ValueError('SCANNED_PDF')
             raw = extract_transactions(file_data['bytes'], confirmed_bank)
             rows = build_rows(raw, confirmed_bank)
             fee_rows = sum(1 for r in rows if r['details'] == 'Service Fee')
@@ -529,12 +544,22 @@ if st.session_state.confirmed_bank and st.session_state.confirmed_files:
             st.session_state.all_rows.extend(rows)
 
         except Exception as e:
+            error_msg = str(e)
+            if error_msg == "SCANNED_PDF":
+                st.warning(
+                    f"**{file_data['name']}** is a scanned / image-based PDF with no readable text layer.\n\n"
+                    "**To fix this:**\n"
+                    "1. Go to https://www.ilovepdf.com/ocr-pdf (free, no sign-up)\n"
+                    "2. Upload your PDF and click **Convert to PDF**\n"
+                    "3. Download the result and re-upload it here\n\n"
+                    "The OCR step adds a text layer so the app can read your transactions."
+                )
             st.session_state.processed_files.append({
                 'name': file_data['name'],
                 'bank': confirmed_bank,
                 'rows': [],
                 'status': 'error',
-                'error': str(e)
+                'error': 'Scanned PDF — needs OCR. See instructions above.' if error_msg == 'SCANNED_PDF' else error_msg
             })
 
         progress.progress((i + 1) / len(files_to_process))
@@ -690,7 +715,7 @@ elif not uploaded_files:
     banks_str = " · ".join(BANK_LIST)
     st.markdown(f"""
     <div style="text-align:center; padding: 60px 40px; color: #2a2a2a; border: 2px dashed #1a1a1a; border-radius: 12px; margin-top: 20px;">
-        <div style="font-size: 48px; margin-bottom: 16px;">🏦</div>
+        <div style="font-size: 48px; margin-bottom: 16px;">Select a bank BEFORE uploading a pdf</div>
         <div style="font-size: 16px; color: #444; margin-bottom: 8px;">Select your bank in the sidebar, then upload PDF statements</div>
         <div style="font-size: 12px; color: #333;">{banks_str}</div>
         <div style="font-size: 12px; margin-top: 8px;">Output: Date · Details · Amount (signed) · Pastel-ready</div>
