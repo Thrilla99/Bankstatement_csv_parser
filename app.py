@@ -13,7 +13,7 @@ st.set_page_config(
 )
 
 # ─── CUSTOM CSS ──────────────────────────────────────────────────────────────
-st.markdown("""
+st.markdown(""" 
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;700&display=swap');
 html, body, [class*="css"] { font-family: 'DM Mono', monospace; background-color: #0a0a0a; color: #d0cdc6; }
@@ -680,7 +680,7 @@ elif not uploaded_files:
     banks_str = " · ".join(BANK_LIST)
     st.markdown(f"""
     <div style="text-align:center; padding: 60px 40px; color: #2a2a2a; border: 2px dashed #1a1a1a; border-radius: 12px; margin-top: 20px;">
-        <div style="font-size: 48px; margin-bottom: 16px;">Please click on,or drag files to the bar above</div>
+        <div style="font-size: 48px; margin-bottom: 16px;">Select a bank BEFORE importing your file</div>
         <div style="font-size: 16px; color: #444; margin-bottom: 8px;">Select your bank in the sidebar, then upload PDF statements</div>
         <div style="font-size: 12px; color: #333;">{banks_str}</div>
         <div style="font-size: 12px; margin-top: 8px;">Output: Date · Details · Amount (signed) · Pastel-ready</div>
