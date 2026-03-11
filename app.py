@@ -417,7 +417,7 @@ with st.sidebar:
     st.markdown("### ⬡ SA Bank → CSV")
     st.markdown("---")
 
-    st.markdown("**🔑 Anthropic API Key**")
+    st.markdown("**Anthropic API Key**")
     api_key_input = st.text_input(
         "API Key", type="password",
         placeholder="Paste your Anthropic API key",
@@ -426,7 +426,7 @@ with st.sidebar:
     st.caption("Get a key from [console.anthropic.com](https://console.anthropic.com)")
     st.markdown("---")
 
-    st.markdown("**🏦 Select Bank**")
+    st.markdown("**Select The Bank**")
     selected_bank = st.selectbox(
         "Bank", BANK_LIST,
         label_visibility="collapsed", key="selected_bank"
@@ -439,15 +439,15 @@ with st.sidebar:
     st.markdown("---")
 
     if selected_bank == "Capitec":
-        st.markdown("**ℹ️ Capitec fee rows**")
+        st.markdown("**Capitec fee rows**")
         st.caption("Fees are automatically split into separate **Service Fee** rows.")
         st.markdown("---")
 
-    st.markdown("**💡 Pastel tip**")
+    st.markdown("** Pastel tip**")
     st.caption("Date + Details + Amount maps directly into Pastel's import format.")
     st.markdown("---")
 
-    st.markdown("**🧪 Dev / Testing**")
+    st.markdown("**Dev / Testing**")
     mock_mode = st.checkbox(
         "Mock mode (no API calls)",
         value=False,
@@ -599,7 +599,7 @@ elif uploaded_files:
 
 # ─── PROCESSED FILES ─────────────────────────────────────────────────────────
 if st.session_state.processed_files:
-    st.markdown("#### 📂 Processed Files")
+    st.markdown("#### Processed Files")
     for idx, f in enumerate(st.session_state.processed_files):
         col_a, col_b = st.columns([3, 1])
         with col_a:
@@ -680,7 +680,7 @@ elif not uploaded_files:
     banks_str = " · ".join(BANK_LIST)
     st.markdown(f"""
     <div style="text-align:center; padding: 60px 40px; color: #2a2a2a; border: 2px dashed #1a1a1a; border-radius: 12px; margin-top: 20px;">
-        <div style="font-size: 48px; margin-bottom: 16px;">🏦</div>
+        <div style="font-size: 48px; margin-bottom: 16px;">Please click on,or drag files to the bar above</div>
         <div style="font-size: 16px; color: #444; margin-bottom: 8px;">Select your bank in the sidebar, then upload PDF statements</div>
         <div style="font-size: 12px; color: #333;">{banks_str}</div>
         <div style="font-size: 12px; margin-top: 8px;">Output: Date · Details · Amount (signed) · Pastel-ready</div>
