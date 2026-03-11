@@ -167,13 +167,21 @@ Return ONLY the JSON array, nothing else.""",
 "ABSA": """You are a bank statement parser. Extract ALL transactions from this ABSA bank statement.
 
 Return ONLY a valid JSON array. No markdown, no code fences, no explanation.
-Skip: Bal Brought Forward, any totals or summary rows.
-IGNORE the Charge column entirely — do not create any rows from it.
+
+SOURCE TABLE: Only extract from the main "Your transactions" table (columns: Date | Transaction Description | Charge | Debit Amount | Credit Amount | Balance). Pages show "Your transactions (continued)" — same table, keep extracting.
+
+ABSA prints a small repeat summary box at the bottom of every page — it looks like 4 columns with the account number at the top and shows a few recent transactions again. IGNORE THIS ENTIRELY — it causes duplicates.
+
+Also ignore:
+- Account Summary section (Balance Brought Forward, Deposits, Sundry Credits totals)
+- SERVICE FEE / MNTHLY ACCT FEE footer lines
+- CHARGE legend (A = ADMINISTRATION C = CASH DEPOSIT etc.)
+- Any row with no date, Bal Brought Forward
 
 Each object must have exactly these keys:
-- date (string DD/MM/YYYY — input format is like "3/09/2024", normalise to DD/MM/YYYY)
-- details (string — combine Transaction Description line 1 and line 2 if present, separated by " - ". Strip leading/trailing spaces.)
-- amount (number — if Debit Amount column has value it is negative (money out), if Credit Amount column has value it is positive (money in). Remove commas from numbers.)
+- date (string DD/MM/YYYY — input like "3/09/2024" or "1/10/2024", normalise to DD/MM/YYYY)
+- details (string — combine Transaction Description lines 1 and 2, separated by " - ". Strip spaces.)
+- amount (number — Debit Amount = NEGATIVE, Credit Amount = POSITIVE. Remove commas. Ignore Charge column.)
 
 Return ONLY the JSON array, nothing else.""",
 
@@ -297,7 +305,7 @@ def pdf_to_images_b64(pdf_bytes):
     doc.close()
     return images
 
-def extract_transactions_vision(pdf_bytes, bank):
+def extract_transactions_vision(pdf_bytes, bank, stream_status=None):
     """Send PDF pages as images to Claude vision when normal text extraction fails."""
     client = get_client()
     if not client:
@@ -308,57 +316,27 @@ def extract_transactions_vision(pdf_bytes, bank):
     for img_b64 in images_b64:
         content_blocks.append({
             "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": img_b64
-            }
+            "source": {"type": "base64", "media_type": "image/png", "data": img_b64}
         })
     content_blocks.append({"type": "text", "text": prompt})
-    response = client.messages.create(
+    raw = ""
+    token_count = 0
+    with client.messages.stream(
         model="claude-sonnet-4-6",
         max_tokens=16000,
         messages=[{"role": "user", "content": content_blocks}]
-    )
-    raw = response.content[0].text.strip()
-    raw = re.sub(r'^```json\s*', '', raw, flags=re.IGNORECASE)
-    raw = re.sub(r'^```\s*', '', raw, flags=re.IGNORECASE)
-    raw = re.sub(r'```\s*$', '', raw)
-    start = raw.find('[')
-    end = raw.rfind(']')
-    if start == -1 or end == -1:
-        raise ValueError("No JSON array found in Claude vision response")
-    return json.loads(raw[start:end+1])
+    ) as stream:
+        for text in stream.text_stream:
+            raw += text
+            token_count += 1
+            if stream_status and token_count % 50 == 0:
+                stream_status.caption(f"Receiving response (vision) — {token_count} tokens so far...")
+    if stream_status:
+        stream_status.caption(f"Response complete — {token_count} tokens received. Parsing...")
+    return _parse_raw_json(raw)
 
-def extract_transactions(pdf_bytes, bank):
-    client = get_client()
-    if not client:
-        raise ValueError("No API key configured")
-    prompt = PROMPTS[bank]
-    pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("utf-8")
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=16000,  # Max for sonnet — needed for long statements (12+ pages)
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": pdf_b64
-                    }
-                },
-                {
-                    "type": "text",
-                    "text": prompt
-                }
-            ]
-        }]
-    )
-    raw = response.content[0].text.strip()
-    # Strip markdown fences if present
+def _parse_raw_json(raw):
+    raw = raw.strip()
     raw = re.sub(r'^```json\s*', '', raw, flags=re.IGNORECASE)
     raw = re.sub(r'^```\s*', '', raw, flags=re.IGNORECASE)
     raw = re.sub(r'```\s*$', '', raw)
@@ -367,6 +345,83 @@ def extract_transactions(pdf_bytes, bank):
     if start == -1 or end == -1:
         raise ValueError("No JSON array found in Claude response")
     return json.loads(raw[start:end+1])
+
+CHUNK_SIZE = 8  # pages per chunk for large PDFs
+
+def split_pdf_bytes(pdf_bytes, chunk_size=CHUNK_SIZE):
+    import fitz
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    total_pages = len(doc)
+    chunks = []
+    for start in range(0, total_pages, chunk_size):
+        end = min(start + chunk_size, total_pages)
+        new_doc = fitz.open()
+        new_doc.insert_pdf(doc, from_page=start, to_page=end-1)
+        buf = new_doc.tobytes()
+        new_doc.close()
+        chunks.append((start+1, end, buf))
+    doc.close()
+    return chunks
+
+def _call_claude_stream(pdf_b64, prompt, stream_status, chunk_label=""):
+    client = get_client()
+    raw = ""
+    token_count = 0
+    with client.messages.stream(
+        model="claude-sonnet-4-6",
+        max_tokens=16000,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64}},
+                {"type": "text", "text": prompt}
+            ]
+        }]
+    ) as stream:
+        for text in stream.text_stream:
+            raw += text
+            token_count += 1
+            if stream_status and token_count % 50 == 0:
+                stream_status.caption(f"Receiving{chunk_label} — {token_count} tokens so far...")
+    return raw, token_count
+
+def extract_transactions(pdf_bytes, bank, stream_status=None):
+    client = get_client()
+    if not client:
+        raise ValueError("No API key configured")
+    prompt = PROMPTS[bank]
+
+    import fitz as _fitz
+    _doc = _fitz.open(stream=pdf_bytes, filetype="pdf")
+    page_count = len(_doc)
+    _doc.close()
+
+    if page_count <= CHUNK_SIZE:
+        pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("utf-8")
+        raw, token_count = _call_claude_stream(pdf_b64, prompt, stream_status)
+        if stream_status:
+            stream_status.caption(f"Response complete — {token_count} tokens. Parsing...")
+        return _parse_raw_json(raw)
+    else:
+        chunks = split_pdf_bytes(pdf_bytes, CHUNK_SIZE)
+        all_rows = []
+        total_tokens = 0
+        for i, (page_start, page_end, chunk_bytes) in enumerate(chunks):
+            chunk_label = f" chunk {i+1}/{len(chunks)} (pages {page_start}-{page_end})"
+            if stream_status:
+                stream_status.caption(f"Processing{chunk_label}...")
+            pdf_b64 = base64.standard_b64encode(chunk_bytes).decode("utf-8")
+            raw, token_count = _call_claude_stream(pdf_b64, prompt, stream_status, chunk_label)
+            total_tokens += token_count
+            try:
+                chunk_rows = _parse_raw_json(raw)
+                all_rows.extend(chunk_rows)
+            except Exception as e:
+                if stream_status:
+                    stream_status.caption(f"Warning: chunk {i+1} parse error — {e}")
+        if stream_status:
+            stream_status.caption(f"All {len(chunks)} chunks done — {total_tokens} total tokens. Merging...")
+        return all_rows
 
 def normalise_date(date_str):
     """Ensure date is in DD/MM/YYYY format. Handles common variants."""
@@ -565,6 +620,7 @@ if st.session_state.confirmed_bank and st.session_state.confirmed_files:
     st.markdown(f"#### Extracting {total_files} file{'s' if total_files > 1 else ''} as {confirmed_bank}")
     progress = st.progress(0)
     status = st.empty()
+    stream_status = st.empty()
     timing = st.empty()
     start_all = time.time()
 
@@ -578,26 +634,30 @@ if st.session_state.confirmed_bank and st.session_state.confirmed_files:
         eta_label = f"Est. remaining: {est_rem_str}" if i > 0 else f"Est. total: {est_str}"
 
         status.markdown(f"Processing **{file_data['name']}** ({i+1}/{total_files})")
+        stream_status.caption("Sending PDF to Claude...")
         timing.caption(eta_label)
 
         try:
             scanned = is_scanned_pdf(file_data['bytes'])
             if scanned:
-                status.markdown(f"Processing **{file_data['name']}** ({i+1}/{total_files}) — scanned PDF detected, using vision...")
-                timing.caption(f"{eta_label}  |  Vision mode active (takes ~45s per file)")
+                status.markdown(f"Processing **{file_data['name']}** ({i+1}/{total_files}) — scanned PDF, using vision...")
+                stream_status.caption("Converting pages to images...")
+                timing.caption(f"{eta_label}  |  Vision mode (~45s per file)")
                 try:
-                    raw = extract_transactions_vision(file_data['bytes'], confirmed_bank)
+                    raw = extract_transactions_vision(file_data['bytes'], confirmed_bank, stream_status=stream_status)
                     vision_used = True
                 except Exception as ve:
                     raise ValueError(f"VISION_FAILED: {ve}")
             else:
-                raw = extract_transactions(file_data['bytes'], confirmed_bank)
+                raw = extract_transactions(file_data['bytes'], confirmed_bank, stream_status=stream_status)
                 vision_used = False
 
             rows = build_rows(raw, confirmed_bank)
             fee_rows = sum(1 for r in rows if r['details'] == 'Service Fee')
             txn_rows = len(rows) - fee_rows
             elapsed_file = int(time.time() - file_start)
+
+            stream_status.caption(f"Done — {txn_rows} transactions extracted in {elapsed_file}s")
 
             st.session_state.processed_files.append({
                 'name': file_data['name'],
@@ -613,6 +673,7 @@ if st.session_state.confirmed_bank and st.session_state.confirmed_files:
 
         except Exception as e:
             error_msg = str(e)
+            stream_status.empty()
             if error_msg.startswith("VISION_FAILED"):
                 detail = error_msg.replace("VISION_FAILED: ", "")
                 st.error(
@@ -650,6 +711,7 @@ if st.session_state.confirmed_bank and st.session_state.confirmed_files:
     st.session_state.confirmed_files = []
     st.session_state.cached_upload_bytes = {}
     status.empty()
+    stream_status.empty()
     progress.empty()
     st.rerun()
 
