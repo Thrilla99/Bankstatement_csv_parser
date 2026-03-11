@@ -794,7 +794,7 @@ elif not uploaded_files:
     banks_str = " · ".join(BANK_LIST)
     st.markdown(f"""
     <div style="text-align:center; padding: 60px 40px; color: #2a2a2a; border: 2px dashed #1a1a1a; border-radius: 12px; margin-top: 20px;">
-        <div style="font-size: 16px; color: #444; margin-bottom: 8px; margin-top: 8px;">Select your bank in the sidebar, then upload PDF statements</div>
+        <div style="font-size: 24px; color: #444; margin-bottom: 8px; margin-top: 8px;">Select your bank in the sidebar BEFORE you upload PDF statements</div>
         <div style="font-size: 12px; color: #333;">{banks_str}</div>
         <div style="font-size: 12px; margin-top: 8px;">Output: Date · Details · Amount (signed) · Pastel-ready</div>
     </div>
