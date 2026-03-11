@@ -81,16 +81,33 @@ SKIP:
 
 Return ONLY the JSON array, nothing else.""",
 
-"Investec": """You are a bank statement parser. Extract ALL transactions from this Investec bank statement.
+"Investec": """You are a bank statement parser. Your ONLY output must be a valid JSON array. No explanation, no markdown, no code fences — just the raw JSON array starting with [ and ending with ].
 
-Return ONLY a valid JSON array. No markdown, no code fences, no explanation.
-Skip: Balance brought forward, Closing Balance, any summary or totals rows.
-Only include rows from the main transaction table (pages 1-2 typically). Ignore secondary summary tables.
+TASK: Extract every transaction from the MAIN TRANSACTION TABLE of this Investec bank statement.
+The main table has columns: Posted Date | Trans Date | Transaction Description | Debit | Credit | Balance
+
+CRITICAL — the PDF has TWO sections that look like transaction tables:
+1. The MAIN table (Posted Date, Trans Date, Description, Debit, Credit, Balance) — USE THIS ONE
+2. A secondary "Online payments, deposits, fees and interest" summary table — IGNORE THIS ENTIRELY
+3. A "Card transactions" summary table — IGNORE THIS ENTIRELY
 
 Each object must have exactly these keys:
-- date (string DD/MM/YYYY — input format is like "2 Feb 2026", convert to DD/MM/YYYY)
-- details (string — the Transaction Description column)
-- amount (number — positive if Credit column has value, negative if Debit column has value)
+- "date": string DD/MM/YYYY — use Trans Date column (format "2 Feb 2026" → "02/02/2026")
+- "details": string — the Transaction Description column value
+- "amount": number — if Credit column has a value: POSITIVE. If Debit column has a value: NEGATIVE. Remove commas.
+
+IMPORTANT SIGN RULES:
+- Credits (money IN to the account) = POSITIVE: deposits, interest received, incoming transfers
+- Debits (money OUT of the account) = NEGATIVE: payments, fees, outgoing transfers, card purchases
+- "Cr Interest Adjustment" appears in the Debit column = NEGATIVE (it is interest being charged/adjusted out)
+- "Credit interest" appears in the Credit column = POSITIVE
+
+INCLUDE every row in the main table, even if the same description and amount appears multiple times on the same date (e.g. multiple "Electronic debit fee" rows on the same day are separate real transactions).
+
+SKIP ONLY:
+- "Balance brought forward" line
+- "Closing Balance" line
+- Any subtotal or total rows
 
 Return ONLY the JSON array, nothing else.""",
 
@@ -333,7 +350,7 @@ def build_rows(raw, bank):
                 result.append({'date': date, 'details': 'Service Fee', 'amount': fee})
         else:
             result.append({'date': date, 'details': details, 'amount': amount})
-    return deduplicate_rows(result)
+    return result
 
 
 def deduplicate_rows(rows):
